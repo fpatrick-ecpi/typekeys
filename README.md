@@ -9,6 +9,10 @@ whatever window is in front. Shift and Option are held down as real modifier
 keys, which is what remote canvases like NETLAB, Guacamole and noVNC respond
 to. AppleScript keystrokes don't work there. This does.
 
+![typekeys demo: run it, paste your text, press Enter, and it types into a document](docs/demo-paste.gif)
+
+Want it full size? [Download the video](docs/demo-paste.mp4).
+
 ## Setup (once)
 
 1. Install the one dependency:
@@ -65,6 +69,10 @@ Type a file, like a prepared prompt:
 ```bash
 ./typekeys.py -f ~/path/to/prompt.txt
 ```
+
+![typekeys demo: typing a text file into a document](docs/demo-file.gif)
+
+[Download this one as a video](docs/demo-file.mp4).
 
 Type whatever is already on your Mac clipboard, with no prompt:
 
