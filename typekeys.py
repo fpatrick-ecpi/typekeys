@@ -7,12 +7,13 @@ This is one level below AppleScript's System Events and is what remote
 desktop canvases (NETLAB, Guacamole, noVNC) actually respond to.
 
 Usage:
-  python3 typekeys.py                          # prompt for the text (hidden, like a password)
-  python3 typekeys.py --show                   # prompt, but echo what you type
+  python3 typekeys.py                          # paste anything (multi-line ok), press Enter
+  python3 typekeys.py --secret                 # prompt hides what you paste (API keys)
   python3 typekeys.py -f ~/openai.key          # type a file's contents
   python3 typekeys.py -c                       # type the clipboard (long paste blocks)
   python3 typekeys.py -t "Hello_World"         # type literal text
   python3 typekeys.py --enter                  # ...then press Enter
+  python3 typekeys.py --dry-run                # show what would be typed, type nothing
   options: --delay 0.03 (seconds between keys), --wait 3 (seconds before
            starting so you can click into the target window),
            --breather 200 (extra pause every N chars on long scripts; 0 = off)
@@ -31,7 +32,7 @@ Setup (once):
   pip3 install pyobjc-framework-Quartz
   System Settings > Privacy & Security > Accessibility: enable your terminal app
 """
-import argparse, getpass, subprocess, sys, time
+import argparse, getpass, os, select, subprocess, sys, termios, time, tty
 try:
     import Quartz
 except ImportError:
@@ -105,6 +106,48 @@ def type_text(text, delay, breather=200, newline='shift'):
             time.sleep(0.4)
             print(f"  ...{i}/{total}", file=sys.stderr)
 
+def read_paste():
+    """Read a paste of any length, then the Enter that ends it.
+
+    The terminal is put in cbreak mode so a multi-line paste arrives as one
+    burst of keys, blank lines and all. The paste ends when you press Enter
+    on its own after it. Backspace works for hand-typed fixes.
+    """
+    print("Paste your text, then press Enter:", file=sys.stderr)
+    if not sys.stdin.isatty():
+        return sys.stdin.read().rstrip('\n')
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    buf = []
+    try:
+        tty.setcbreak(fd)
+        while True:
+            burst = os.read(fd, 65536).decode('utf-8', 'replace')
+            # A paste can arrive in pieces; keep reading while more is coming.
+            while select.select([fd], [], [], 0.15)[0]:
+                burst += os.read(fd, 65536).decode('utf-8', 'replace')
+            burst = burst.replace('\r\n', '\n').replace('\r', '\n')
+            if burst == '\n':          # Enter on its own: done
+                sys.stderr.write('\n')
+                break
+            if burst == '\x04' and not buf:   # Ctrl+D on an empty prompt
+                break
+            for ch in burst:
+                if ch in ('\x7f', '\b'):
+                    if buf and buf[-1] != '\n':
+                        buf.pop(); sys.stderr.write('\b \b')
+                elif ch == '\x03':
+                    raise KeyboardInterrupt
+                else:
+                    buf.append(ch)
+                    sys.stderr.write('\r\n' if ch == '\n' else ch)
+            sys.stderr.flush()
+    except KeyboardInterrupt:
+        sys.exit("\nAborted.")
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    return ''.join(buf).rstrip('\n')
+
 ap = argparse.ArgumentParser()
 g = ap.add_mutually_exclusive_group()
 g.add_argument('-f', '--file', help='type the contents of this file')
@@ -117,7 +160,11 @@ ap.add_argument('--breather', type=int, default=200,
 ap.add_argument('--newline', choices=['shift', 'enter'], default='shift',
                 help="how to type newlines: 'shift' = Shift+Return, no submit "
                      "(chat boxes; default); 'enter' = plain Return (documents)")
-ap.add_argument('--show', action='store_true', help='echo the prompted text instead of hiding it')
+ap.add_argument('--secret', action='store_true',
+                help='hide what you paste at the prompt (one line, for keys and passwords)')
+ap.add_argument('--show', action='store_true', help=argparse.SUPPRESS)  # old flag; the prompt shows by default now
+ap.add_argument('-n', '--dry-run', action='store_true',
+                help='print what would be typed and type nothing')
 ap.add_argument('--enter', action='store_true', help='press Enter at the end')
 a = ap.parse_args()
 
@@ -129,12 +176,20 @@ elif a.clipboard:
     text = subprocess.run(['pbpaste'], capture_output=True, text=True).stdout
     if not text:
         sys.exit("Clipboard is empty.")
-else:
-    # Prompt. getpass hides the input so the secret doesn't stay on screen
+elif a.secret:
+    # getpass hides the input so the secret doesn't stay on screen
     # (and it never touches shell history either way).
-    text = input("Text to type: ") if a.show else getpass.getpass("Text to type (hidden): ")
+    text = getpass.getpass("Paste the secret, then press Enter (hidden): ")
     if not text:
         sys.exit("Nothing to type.")
+else:
+    text = read_paste()
+    if not text:
+        sys.exit("Nothing to type.")
+if a.dry_run:
+    print(f"[dry run] would type {len(text)} chars:", file=sys.stderr)
+    print(text)
+    sys.exit(0)
 print(f"Typing {len(text)} chars in {a.wait:g}s. Click into the target window now...", file=sys.stderr)
 time.sleep(a.wait)
 type_text(text, a.delay, a.breather, a.newline)
